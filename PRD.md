@@ -28,9 +28,8 @@ A compact DSL syntax can reduce total token usage (input + output) by 20–40% c
 
 ### Non-Goals
 
-- Optimizing the DSL syntax itself (this experiment tests one fixed schema; iteration is future work).
 - Benchmarking multiple models (DeepSeek only for V1; the harness should be model-swappable but only one model is tested).
-- Prompt engineering beyond the DSL translation (no chain-of-thought, few-shot, or other prompting tricks).
+- Prompt engineering beyond the DSL translation (no chain-of-thought or other prompting tricks — few-shot examples are limited to 1–2 in the schema preamble).
 - Production deployment of the DSL.
 
 ---
@@ -42,11 +41,15 @@ A compact DSL syntax can reduce total token usage (input + output) by 20–40% c
 | Group | Prompt Format | Description |
 |-------|--------------|-------------|
 | **A (Baseline)** | HumanEval natural language | Original docstring prompts exactly as shipped in OpenAI's HumanEval dataset |
-| **B (Treatment)** | DSL-compressed | Same 164 tasks rewritten in a compact DSL, prefixed with a one-time schema preamble |
+| **B1 (Minimal DSL)** | DSL — minimal variant | Bare-bones DSL: function signature + terse one-line spec + examples only |
+| **B2 (Standard DSL)** | DSL — standard variant | Full `FUNC/IN/OUT/RULE/EDGE/EX` schema as designed in §4 |
+| **B3 (Verbose DSL)** | DSL — verbose variant | Standard schema + additional `HINT` and `CONTEXT` fields for harder tasks |
+
+Each DSL variant has its own schema preamble (with 1–2 few-shot examples) whose token cost is amortized per §3.5.
 
 ### 3.2 Independent Variables
 
-- Prompt format (Group A vs. Group B)
+- Prompt format (Group A vs. Group B1 vs. B2 vs. B3)
 
 ### 3.3 Dependent Variables
 
@@ -63,19 +66,20 @@ A compact DSL syntax can reduce total token usage (input + output) by 20–40% c
 - **Model:** DeepSeek (single model, fixed version)
 - **Temperature:** 0 (deterministic generation)
 - **Runs per task:** 3 (to capture any non-determinism despite temp=0)
-- **Max tokens:** Consistent limit across both groups
+- **Max tokens:** Consistent limit across all groups
 - **System prompt:** None (or identical if required by the model)
+- **Output format:** All groups produce raw Python functions (no structured output instructions)
 
 ### 3.5 DSL Schema Preamble Accounting
 
-The DSL schema preamble is sent once per session in a real-world scenario but must be included in the experiment for fairness. Cost accounting:
+Each DSL variant's schema preamble (including 1–2 few-shot examples) is sent once per session in a real-world scenario but must be included in the experiment for fairness. Cost accounting per variant:
 
 ```
 amortized_preamble_tokens = preamble_tokens / num_tasks  (164)
-group_b_input_tokens = raw_input_tokens + amortized_preamble_tokens
+group_bN_input_tokens = raw_input_tokens + amortized_preamble_tokens
 ```
 
-Both the raw and amortized figures will be recorded.
+Both the raw and amortized figures will be recorded for each variant (B1, B2, B3).
 
 ---
 
@@ -87,20 +91,50 @@ Both the raw and amortized figures will be recorded.
 - **Structured:** Use a fixed grammar so the model can parse intent without ambiguity.
 - **Self-contained:** The schema preamble defines all syntax so no external docs are needed.
 
-### 4.2 Draft Schema
+### 4.2 DSL Variants
+
+Three DSL variants will be tested, each with increasing verbosity:
+
+#### Variant B1 — Minimal
+
+Bare-bones: signature, one-line spec, examples only. Smallest preamble.
 
 ```
-DSL_SCHEMA = """
+FUNC <name>(<params>) -> <return_type>: <one-line spec>
+  EX: <input> => <output>
+```
+
+#### Variant B2 — Standard
+
+Full structured schema with typed inputs, rules, and edge cases.
+
+```
 FUNC <name>(<params>) -> <return_type>
   IN: <param_name>: <type> [constraints]
   OUT: <type> [description]
   RULE: <compact logic rule>
   EDGE: <edge case handling>
   EX: <input> => <output>
-"""
 ```
 
-### 4.3 Example Translation
+#### Variant B3 — Verbose
+
+Standard schema plus `HINT` (implementation guidance) and `CONTEXT` (domain background) fields for harder tasks.
+
+```
+FUNC <name>(<params>) -> <return_type>
+  IN: <param_name>: <type> [constraints]
+  OUT: <type> [description]
+  RULE: <compact logic rule>
+  EDGE: <edge case handling>
+  HINT: <implementation suggestion>
+  CONTEXT: <domain background>
+  EX: <input> => <output>
+```
+
+Each variant's preamble includes 1–2 worked few-shot examples demonstrating the syntax. Preamble tokens are measured and amortized per §3.5.
+
+### 4.3 Example Translation (`has_close_elements`)
 
 **Group A (Natural Language):**
 ```
@@ -114,12 +148,32 @@ def has_close_elements(numbers: List[float], threshold: float) -> bool:
     """
 ```
 
-**Group B (DSL):**
+**Group B1 (Minimal DSL):**
+```
+FUNC has_close_elements(numbers, threshold) -> bool: any pair closer than threshold
+  EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.3) => True
+  EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.05) => False
+```
+
+**Group B2 (Standard DSL):**
 ```
 FUNC has_close_elements(numbers, threshold) -> bool
   IN: numbers: List[float], threshold: float
   OUT: bool — any pair closer than threshold
   RULE: ∃ i≠j : |numbers[i]-numbers[j]| < threshold
+  EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.3) => True
+  EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.05) => False
+```
+
+**Group B3 (Verbose DSL):**
+```
+FUNC has_close_elements(numbers, threshold) -> bool
+  IN: numbers: List[float], threshold: float
+  OUT: bool — any pair closer than threshold
+  RULE: ∃ i≠j : |numbers[i]-numbers[j]| < threshold
+  EDGE: empty list → False; single element → False
+  HINT: O(n²) pairwise comparison acceptable for HumanEval input sizes
+  CONTEXT: proximity check, common in clustering/dedup
   EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.3) => True
   EX: ([1.0,2.0,3.9,4.0,5.0,2.2], 0.05) => False
 ```
@@ -146,8 +200,8 @@ dsl_compression/
 ├── README.md                 # Setup & run instructions
 ├── requirements.txt          # Python dependencies
 ├── config.py                 # API keys, model params, paths
-├── dsl_schema.py             # DSL schema definition + preamble
-├── dsl_prompts.py            # HumanEval tasks translated to DSL
+├── dsl_schema.py             # DSL schema definitions + preambles (B1, B2, B3)
+├── dsl_prompts.py            # HumanEval tasks translated to DSL (all 3 variants)
 ├── harness.py                # Main experiment runner
 ├── evaluate.py               # Test runner using EvalPlus
 ├── analyze.py                # Stats + summary generation
@@ -164,10 +218,12 @@ dsl_compression/
 1. Load HumanEval dataset (evalplus)
        │
 2. For each task (164):
-   ├── Group A: build natural language prompt
-   ├── Group B: build DSL prompt + preamble
+   ├── Group A:  build natural language prompt
+   ├── Group B1: build minimal DSL prompt + preamble
+   ├── Group B2: build standard DSL prompt + preamble
+   ├── Group B3: build verbose DSL prompt + preamble
    │
-3. For each group × task × run (164 × 2 × 3 = 984 API calls):
+3. For each group × task × run (164 × 4 × 3 = 1,968 API calls):
    ├── Send prompt to DeepSeek API
    ├── Record: task_id, group, run, input_tokens, output_tokens, completion
    │
@@ -190,7 +246,7 @@ dsl_compression/
 | Column | Type | Description |
 |--------|------|-------------|
 | `task_id` | string | HumanEval task ID (e.g., `HumanEval/0`) |
-| `group` | string | `A` (natural language) or `B` (DSL) |
+| `group` | string | `A` (natural language), `B1` (minimal DSL), `B2` (standard DSL), or `B3` (verbose DSL) |
 | `run` | int | Run number (1–3) |
 | `input_tokens` | int | Prompt tokens (from API response) |
 | `output_tokens` | int | Completion tokens (from API response) |
@@ -210,7 +266,7 @@ dsl_compression/
     "pass_at_1": 0.0,
     "total_cost_usd": 0.0
   },
-  "group_b": {
+  "group_b1": {
     "mean_input_tokens": 0,
     "mean_output_tokens": 0,
     "mean_total_tokens": 0,
@@ -219,11 +275,18 @@ dsl_compression/
     "total_cost_usd": 0.0,
     "preamble_tokens": 0
   },
-  "delta": {
-    "token_reduction_pct": 0.0,
-    "pass_at_1_diff": 0.0,
-    "cost_reduction_pct": 0.0
-  }
+  "group_b2": { "...same structure as b1..." },
+  "group_b3": { "...same structure as b1..." },
+  "deltas": {
+    "b1_vs_a": {
+      "token_reduction_pct": 0.0,
+      "pass_at_1_diff": 0.0,
+      "cost_reduction_pct": 0.0
+    },
+    "b2_vs_a": { "...same..." },
+    "b3_vs_a": { "...same..." }
+  },
+  "best_variant": "b1|b2|b3"
 }
 ```
 
@@ -233,9 +296,10 @@ dsl_compression/
 
 | Criterion | Threshold | Priority |
 |-----------|-----------|----------|
-| Token reduction (Group B vs A) | ≥ 15% reduction in mean total tokens | P0 |
-| Correctness preservation | Group B pass@1 within 5 percentage points of Group A | P0 |
-| Experiment completes | All 984 API calls succeed, all results recorded | P0 |
+| Token reduction (any B variant vs A) | ≥ 15% reduction in mean total tokens for at least one variant | P0 |
+| Correctness preservation | Best DSL variant pass@1 within 5 percentage points of Group A | P0 |
+| Experiment completes | All 1,968 API calls succeed, all results recorded | P0 |
+| Variant comparison | Identify which DSL variant (B1/B2/B3) offers the best token/accuracy tradeoff | P1 |
 | Reproducibility | Harness can be re-run with identical results (temp=0) | P1 |
 | Cost accounting | Preamble amortization correctly applied | P1 |
 
@@ -258,7 +322,7 @@ dsl_compression/
 | # | Milestone | Deliverable |
 |---|-----------|-------------|
 | 1 | Repo scaffold | Project structure, dependencies, config |
-| 2 | DSL schema + translations | `dsl_schema.py`, `dsl_prompts.py` with all 164 tasks |
+| 2 | DSL schemas + translations | `dsl_schema.py` (3 variants), `dsl_prompts.py` with all 164 tasks × 3 variants |
 | 3 | Harness implementation | `harness.py` — runs both groups, logs tokens |
 | 4 | Evaluation pipeline | `evaluate.py` — runs EvalPlus tests on completions |
 | 5 | Analysis & reporting | `analyze.py` — generates CSV + summary stats |
@@ -267,16 +331,11 @@ dsl_compression/
 
 ---
 
-## 10. Open Questions
+## 10. Resolved Design Decisions
 
-1. **DSL schema iteration:** Should we test multiple DSL variants in V1 or fix one and iterate later?
-   - *Recommendation:* Fix one for V1. Test variants in V2.
-
-2. **Model selection:** Should we also run against a second model (e.g., Claude, GPT-4) for comparison?
-   - *Recommendation:* DeepSeek only for V1. Harness is model-agnostic by design.
-
-3. **Few-shot examples in DSL preamble:** Should the schema include worked examples?
-   - *Recommendation:* Yes, 1–2 minimal examples to ground the syntax. Count them in preamble tokens.
-
-4. **Output format enforcement:** Should Group B also instruct the model to output in a specific format?
-   - *Recommendation:* No. Both groups should produce raw Python functions. Controlling output format is a separate variable.
+| # | Question | Decision | Rationale |
+|---|----------|----------|-----------|
+| 1 | **DSL variants** | Test 2–3 variants in V1 (B1 minimal, B2 standard, B3 verbose) | Gives richer data in one pass — we learn which compression level works best without a follow-up experiment |
+| 2 | **Model selection** | DeepSeek only for V1 | Keeps experiment focused and cheaper. Harness is model-agnostic; adding models is future work |
+| 3 | **Few-shot in preamble** | Yes, 1–2 worked examples per schema variant | Grounds the model on the DSL syntax. Token cost included in preamble amortization |
+| 4 | **Output format** | Same across all groups — raw Python functions | Only the input format varies. Output format is a controlled variable, not an independent one |
