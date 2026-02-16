@@ -1,6 +1,11 @@
 """Configuration for the DSL Token Compression Experiment."""
 
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 # --- API ---
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
